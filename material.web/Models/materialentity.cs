@@ -8,6 +8,6 @@ namespace Material.Web.Models
         public decimal Price { get; set; }
         public int Quantity { get; set; }
         public DateTime CreatedDate { get; set; }
-        public DateTime UpdatedDate { get; set; }
+        public DateTime UpdatedDate { get; set; } // update date
     }
 }
