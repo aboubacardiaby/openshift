@@ -37,6 +37,6 @@ jobs:
 
       - name: Deploy to OpenShift
         run: |
-          oc delete all -l app=myapp || true
+          oc delete all -l app=matapp || true
           oc new-app --docker-image=${{ secrets.DOCKERHUB_USERNAME }}/matapp:latest --name=matapp
           oc expose svc/matapp
