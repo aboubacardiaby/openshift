@@ -1,122 +1,42 @@
-name: Material CI/CD Pipeline
+name: Build and Deploy to OpenShift Sandbox
 
 on:
   push:
-    branches:
-      - develop-05
-      - main
-
-env:
-  GAR_REGION: us-central1
-  IMAGE_NAME: material-image
-  REPO_NAME: demoapi
-  CLOUD_RUN_REGION: us-central1
-  CLOUD_RUN_SERVICE_NAME_DEV: material-dev-service
- 
+    branches: [main]
 
 jobs:
-
-  build:
-    name: Build
+  build-and-deploy:
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.set_tag.outputs.image_tag }}
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: 8.x
+      - name: Log in to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
 
-      - name: Build Solution
-        run: dotnet build --configuration Release
+      - name: Build Docker image
+        run: docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/matapp:latest .
 
-      - name: Publish Solution
-        run: dotnet publish --configuration Release --output ./publish
+      - name: Push Docker image
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/matapp:latest
 
-      - name: Set Image Tag
-        id: set_tag
-        run: echo "image_tag=build-${{ github.run_number }}" >> $GITHUB_OUTPUT
-
-      - name: Build Docker Image
+      - name: Install OpenShift CLI
         run: |
-          docker build -t $IMAGE_NAME:build-${{ github.run_number }} .
-          docker save $IMAGE_NAME:build-${{ github.run_number }} -o webapi-image.tar
+          curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/oc/latest/linux/oc.tar.gz
+          tar -xvf oc.tar.gz
+          sudo mv oc /usr/local/bin/
 
-      - name: Upload Image Tarball
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-tarball
-          path: webapi-image.tar
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: 8.x
-
-      - name: Run Unit Tests
+      - name: Login to OpenShift
         run: |
-          dotnet restore ./material.Tests/material.Tests.csproj
-          dotnet test ./material.Tests/material.Tests.csproj --logger trx --results-directory TestResults
+          oc login ${{ secrets.OC_SERVER }} --token=${{ secrets.OC_TOKEN }}
 
-      - name: Publish Test Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: TestResults
-
-  deploy-dev:
-    name: Deploy to Dev
-    runs-on: ubuntu-latest
-    needs: test
-    environment: development
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-image-tarball
-
-      - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          service_account_key: ${{ secrets.SAKEY }}
-          project_id: workingpaper01
-
-      - name: Load Docker Image
+      - name: Set OpenShift project
         run: |
-          docker load -i webapi-image.tar
-          docker tag $IMAGE_NAME:build-${{ github.run_number }} $IMAGE_NAME:latest
+          oc project ${{ secrets.OC_NAMESPACE }}
 
-      - name: Authenticate Docker to Artifact Registry
+      - name: Deploy to OpenShift
         run: |
-            cat "${{ secrets.SAKEY }}"
-            printf '%s' "${{ secrets.SAKEY }}" > key.json
-            gcloud auth activate-service-account --key-file=key.json
-            gcloud config set project workingpaper01
-            gcloud auth configure-docker us-central1-docker.pkg.dev
-            rm key.json
-        shell: bash
-  
-      - name: Push & Deploy to Cloud Run (Dev)
-        run: |
-          IMAGE_TAG=build-${{ github.run_number }}
-          GAR_URI=${GAR_REGION}-docker.pkg.dev/workingpaper01/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG}
-          docker tag $IMAGE_NAME:$IMAGE_TAG $GAR_URI
-          docker push $GAR_URI
-          gcloud run deploy $CLOUD_RUN_SERVICE_NAME_DEV \
-            --image=$GAR_URI \
-            --platform=managed \
-            --region=$CLOUD_RUN_REGION \
-            --allow-unauthenticated \
-            --port=8080 \          
-            --memory=512Mi --cpu=1 --min-instances=1 --max-instances=3 \
-            --set-env-vars=ASPNETCORE_ENVIRONMENT=Development
-
-  
+          oc delete all -l app=myapp || true
+          oc new-app --docker-image=${{ secrets.DOCKERHUB_USERNAME }}/matapp:latest --name=matapp
+          oc expose svc/matapp
